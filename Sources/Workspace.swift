@@ -10617,8 +10617,21 @@ final class Workspace: Identifiable, ObservableObject {
     /// Ordinal for CMUX_PORT range assignment (monotonically increasing per app session)
     var portOrdinal: Int = 0
 
-    /// The bonsplit controller managing the split panes for this workspace
-    let bonsplitController: BonsplitController
+    @Published private(set) var layoutTabs: [LayoutTab] = []
+    @Published var selectedLayoutTabId: UUID?
+
+    var selectedLayoutTab: LayoutTab? {
+        guard let id = selectedLayoutTabId else { return layoutTabs.first }
+        return layoutTabs.first(where: { $0.id == id }) ?? layoutTabs.first
+    }
+
+    var bonsplitController: BonsplitController {
+        guard let tab = selectedLayoutTab else {
+            fatalError("Workspace has no layout tabs")
+        }
+        return tab.bonsplitController
+    }
+
     private struct SurfaceTabBarExecutableButton {
         let button: CmuxSurfaceTabBarButton
         let builtInAction: CmuxSurfaceTabBarBuiltInAction?
@@ -11303,8 +11316,11 @@ final class Workspace: Identifiable, ObservableObject {
             newTabPosition: .current,
             appearance: appearance
         )
-        self.bonsplitController = BonsplitController(configuration: config)
-        bonsplitController.contextMenuShortcuts = Self.buildContextMenuShortcuts()
+        let controller = BonsplitController(configuration: config)
+        controller.contextMenuShortcuts = Self.buildContextMenuShortcuts()
+        let initialLayoutTab = LayoutTab(title: title, bonsplitController: controller)
+        self.layoutTabs = [initialLayoutTab]
+        self.selectedLayoutTabId = initialLayoutTab.id
 
         // Remove the default "Welcome" tab that bonsplit creates
         let welcomeTabIds = bonsplitController.allTabIds
@@ -11392,39 +11408,7 @@ final class Workspace: Identifiable, ObservableObject {
             bonsplitController.closeTab(welcomeTabId)
         }
 
-        bonsplitController.onExternalTabDrop = { [weak self] request in
-            self?.handleExternalTabDrop(request) ?? false
-        }
-        bonsplitController.onExternalFileDrop = { [weak self] request in
-            self?.handleExternalFileDrop(request) ?? false
-        }
-        bonsplitController.tabContextMoveDestinationsProvider = { [weak self] tabId, _ in
-            self?.bonsplitTabMoveDestinations(for: tabId) ?? []
-        }
-        bonsplitController.tabContextForkConversationAvailabilityProvider = { [weak self] tabId, _ in
-            guard let self,
-                  let panelId = self.panelIdFromSurfaceId(tabId) else { return false }
-            return self.canForkAgentConversationFromPanel(panelId)
-        }
-        bonsplitController.tabContextForkConversationDefaultActionProvider = { _, _ in
-            AgentConversationForkDefaultSettings.current().tabContextAction
-        }
-        bonsplitController.onTabCloseRequest = { [weak self] tabId, _, source in
-            switch source {
-            case .closeButton:
-                self?.markTabCloseButtonClose(surfaceId: tabId)
-            case .middleClick:
-                self?.markExplicitClose(surfaceId: tabId)
-            }
-        }
-        bonsplitController.onTabZoomToggleRequest = { [weak self] tabId, _ in
-            guard let self,
-                  let panelId = self.panelIdFromSurfaceId(tabId) else { return false }
-            return self.toggleSplitZoom(panelId: panelId)
-        }
-
-        // Set ourselves as delegate
-        bonsplitController.delegate = self
+        configureBonsplitController(bonsplitController)
 
         // Ensure bonsplit has a focused pane and our didSelectTab handler runs for the
         // initial terminal. bonsplit's createTab selects internally but does not emit
@@ -11457,6 +11441,40 @@ final class Workspace: Identifiable, ObservableObject {
 
     private var sharedLiveAgentIndexCancellable: AnyCancellable?
 
+    private func configureBonsplitController(_ controller: BonsplitController) {
+        controller.onExternalTabDrop = { [weak self] request in
+            self?.handleExternalTabDrop(request) ?? false
+        }
+        controller.onExternalFileDrop = { [weak self] request in
+            self?.handleExternalFileDrop(request) ?? false
+        }
+        controller.tabContextMoveDestinationsProvider = { [weak self] tabId, _ in
+            self?.bonsplitTabMoveDestinations(for: tabId) ?? []
+        }
+        controller.tabContextForkConversationAvailabilityProvider = { [weak self] tabId, _ in
+            guard let self,
+                  let panelId = self.panelIdFromSurfaceId(tabId) else { return false }
+            return self.canForkAgentConversationFromPanel(panelId)
+        }
+        controller.tabContextForkConversationDefaultActionProvider = { _, _ in
+            AgentConversationForkDefaultSettings.current().tabContextAction
+        }
+        controller.onTabCloseRequest = { [weak self] tabId, _, source in
+            switch source {
+            case .closeButton:
+                self?.markTabCloseButtonClose(surfaceId: tabId)
+            case .middleClick:
+                self?.markExplicitClose(surfaceId: tabId)
+            }
+        }
+        controller.onTabZoomToggleRequest = { [weak self] tabId, _ in
+            guard let self,
+                  let panelId = self.panelIdFromSurfaceId(tabId) else { return false }
+            return self.toggleSplitZoom(panelId: panelId)
+        }
+        controller.delegate = self
+    }
+
     deinit {
         for registrations in pendingTerminalInputObserversByPanelId.values {
             for registration in registrations {
@@ -11471,24 +11489,30 @@ final class Workspace: Identifiable, ObservableObject {
 
     func refreshSplitButtonTooltips() {
         let tooltips = Self.currentSplitButtonTooltips()
-        var configuration = bonsplitController.configuration
-        guard configuration.appearance.splitButtonTooltips != tooltips else { return }
-        configuration.appearance.splitButtonTooltips = tooltips
-        bonsplitController.configuration = configuration
+        for controller in layoutTabs.map(\.bonsplitController) {
+            var configuration = controller.configuration
+            guard configuration.appearance.splitButtonTooltips != tooltips else { continue }
+            configuration.appearance.splitButtonTooltips = tooltips
+            controller.configuration = configuration
+        }
     }
 
     func refreshSplitButtonBackdropEffect() {
-        var configuration = bonsplitController.configuration
-        configuration.appearance.splitButtonBackdropEffect = Self.bonsplitSplitButtonBackdropEffect()
-        bonsplitController.configuration = configuration
+        for controller in layoutTabs.map(\.bonsplitController) {
+            var configuration = controller.configuration
+            configuration.appearance.splitButtonBackdropEffect = Self.bonsplitSplitButtonBackdropEffect()
+            controller.configuration = configuration
+        }
     }
 
     func refreshTabCloseButtonVisibility() {
         let allowCloseTabs = !CloseTabWarningSettings.hidesTabCloseButton()
-        var configuration = bonsplitController.configuration
-        guard configuration.allowCloseTabs != allowCloseTabs else { return }
-        configuration.allowCloseTabs = allowCloseTabs
-        bonsplitController.configuration = configuration
+        for controller in layoutTabs.map(\.bonsplitController) {
+            var configuration = controller.configuration
+            guard configuration.allowCloseTabs != allowCloseTabs else { continue }
+            configuration.allowCloseTabs = allowCloseTabs
+            controller.configuration = configuration
+        }
     }
 
     func applySurfaceTabBarButtons(
@@ -11558,10 +11582,157 @@ final class Workspace: Identifiable, ObservableObject {
                 allowProjectLocalIcon: allowProjectLocalIcon
             )
         }
-        var configuration = bonsplitController.configuration
-        guard configuration.appearance.splitButtons != bonsplitButtons else { return }
-        configuration.appearance.splitButtons = bonsplitButtons
-        bonsplitController.configuration = configuration
+        for controller in layoutTabs.map(\.bonsplitController) {
+            var configuration = controller.configuration
+            guard configuration.appearance.splitButtons != bonsplitButtons else { continue }
+            configuration.appearance.splitButtons = bonsplitButtons
+            controller.configuration = configuration
+        }
+    }
+
+    @discardableResult
+    func createLayoutTab(switchTo: Bool = true) -> LayoutTab {
+        let initialSurfaceTabBarFontSize = GhosttyConfig.load().surfaceTabBarFontSize
+        let appearance = Self.bonsplitAppearance(
+            from: GhosttyApp.shared.defaultBackgroundColor,
+            backgroundOpacity: GhosttyApp.shared.defaultBackgroundOpacity,
+            tabTitleFontSize: initialSurfaceTabBarFontSize
+        )
+        let config = BonsplitConfiguration(
+            allowSplits: true,
+            allowCloseTabs: !CloseTabWarningSettings.hidesTabCloseButton(),
+            allowCloseLastPane: false,
+            allowTabReordering: true,
+            allowCrossPaneTabMove: true,
+            autoCloseEmptyPanes: true,
+            contentViewLifecycle: .keepAllAlive,
+            newTabPosition: .current,
+            appearance: appearance
+        )
+        let controller = BonsplitController(configuration: config)
+        controller.contextMenuShortcuts = Self.buildContextMenuShortcuts()
+
+        let layoutTab = LayoutTab(title: title, bonsplitController: controller)
+
+        let welcomeTabIds = controller.allTabIds
+
+        let workingDir: String? = {
+            if let panelId = focusedPanelId,
+               let dir = panelDirectories[panelId]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !dir.isEmpty {
+                return dir
+            }
+            return currentDirectory
+        }()
+        let inheritedConfig: ghostty_surface_config_s? = focusedTerminalPanel.flatMap { panel in
+            panel.surface.surface.map { surface in
+                cmuxInheritedSurfaceConfig(sourceSurface: surface, context: GHOSTTY_SURFACE_CONTEXT_TAB)
+            }
+        }
+        let terminalPanel = TerminalPanel(
+            workspaceId: id,
+            context: GHOSTTY_SURFACE_CONTEXT_TAB,
+            configTemplate: inheritedConfig,
+            workingDirectory: workingDir,
+            portOrdinal: portOrdinal
+        )
+        panels[terminalPanel.id] = terminalPanel
+        panelTitles[terminalPanel.id] = terminalPanel.displayTitle
+        seedTerminalInheritanceFontPoints(panelId: terminalPanel.id, configTemplate: inheritedConfig)
+
+        if let tabId = controller.createTab(
+            title: terminalPanel.displayTitle,
+            icon: "terminal.fill",
+            kind: SurfaceKind.terminal,
+            isDirty: false,
+            isPinned: false
+        ) {
+            surfaceIdToPanelId[tabId] = terminalPanel.id
+        }
+
+        for welcomeTabId in welcomeTabIds {
+            controller.closeTab(welcomeTabId)
+        }
+
+        configureBonsplitController(controller)
+
+        if let pane = controller.allPaneIds.first {
+            controller.focusPane(pane)
+        }
+
+        layoutTabs.append(layoutTab)
+        if switchTo {
+            selectedLayoutTabId = layoutTab.id
+        }
+
+        return layoutTab
+    }
+
+    func selectLayoutTab(id: UUID) {
+        guard layoutTabs.contains(where: { $0.id == id }) else { return }
+        selectedLayoutTabId = id
+    }
+
+    func selectNextLayoutTab() {
+        guard layoutTabs.count > 1,
+              let currentIndex = layoutTabs.firstIndex(where: { $0.id == selectedLayoutTabId }) else { return }
+        let nextIndex = (currentIndex + 1) % layoutTabs.count
+        selectedLayoutTabId = layoutTabs[nextIndex].id
+    }
+
+    func selectPreviousLayoutTab() {
+        guard layoutTabs.count > 1,
+              let currentIndex = layoutTabs.firstIndex(where: { $0.id == selectedLayoutTabId }) else { return }
+        let prevIndex = (currentIndex - 1 + layoutTabs.count) % layoutTabs.count
+        selectedLayoutTabId = layoutTabs[prevIndex].id
+    }
+
+    func closeLayoutTab(id: UUID) {
+        guard layoutTabs.count > 1 else { return }
+        guard let index = layoutTabs.firstIndex(where: { $0.id == id }) else { return }
+
+        let closingTab = layoutTabs[index]
+        let controller = closingTab.bonsplitController
+
+        // Collect all panel IDs belonging to this layout tab
+        var panelIdsToRemove: Set<UUID> = []
+        for paneId in controller.allPaneIds {
+            for tab in controller.tabs(inPane: paneId) {
+                if let panelId = panelIdFromSurfaceId(tab.id) {
+                    panelIdsToRemove.insert(panelId)
+                }
+            }
+        }
+
+        // Close and remove panels belonging to this layout tab
+        for panelId in panelIdsToRemove {
+            if let surfaceId = surfaceIdFromPanelId(panelId) {
+                surfaceIdToPanelId.removeValue(forKey: surfaceId)
+            }
+            panels[panelId]?.close()
+            panels.removeValue(forKey: panelId)
+            panelDirectories.removeValue(forKey: panelId)
+            panelGitBranches.removeValue(forKey: panelId)
+            panelPullRequests.removeValue(forKey: panelId)
+            panelTitles.removeValue(forKey: panelId)
+            panelCustomTitles.removeValue(forKey: panelId)
+            pinnedPanelIds.remove(panelId)
+            manualUnreadPanelIds.remove(panelId)
+            manualUnreadMarkedAt.removeValue(forKey: panelId)
+            panelSubscriptions.removeValue(forKey: panelId)
+            panelShellActivityStates.removeValue(forKey: panelId)
+            surfaceTTYNames.removeValue(forKey: panelId)
+            restoredTerminalScrollbackByPanelId.removeValue(forKey: panelId)
+            terminalInheritanceFontPointsByPanelId.removeValue(forKey: panelId)
+        }
+
+        layoutTabs.remove(at: index)
+
+        // Select adjacent tab if we closed the selected one
+        if selectedLayoutTabId == id {
+            let newIndex = min(index, layoutTabs.count - 1)
+            selectedLayoutTabId = layoutTabs[newIndex].id
+        }
     }
 
     // MARK: - Surface ID to Panel ID Mapping

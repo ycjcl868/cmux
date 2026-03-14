@@ -7085,6 +7085,16 @@ class TabManager: ObservableObject {
         selectedWorkspace?.selectPreviousSurface()
     }
 
+    /// Select the next layout tab in the selected workspace
+    func selectNextLayoutTab() {
+        selectedWorkspace?.selectNextLayoutTab()
+    }
+
+    /// Select the previous layout tab in the selected workspace
+    func selectPreviousLayoutTab() {
+        selectedWorkspace?.selectPreviousLayoutTab()
+    }
+
     /// Select a surface by index in the currently focused pane of the selected workspace
     func selectSurface(at index: Int) {
         selectedWorkspace?.selectSurface(at: index)
@@ -7095,11 +7105,9 @@ class TabManager: ObservableObject {
         selectedWorkspace?.selectLastSurface()
     }
 
-    /// Create a new terminal surface in the focused pane of the selected workspace
+    /// Create a new layout tab in the selected workspace (Cmd+T).
     func newSurface() {
-        // Cmd+T should always focus the newly created surface.
-        selectedWorkspace?.clearSplitZoom()
-        selectedWorkspace?.newTerminalSurfaceInFocusedPane(focus: true)
+        selectedWorkspace?.createLayoutTab()
     }
 
     func newSurface(initialInput: String) {
