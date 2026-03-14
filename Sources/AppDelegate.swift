@@ -13468,11 +13468,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
-        // Numeric shortcuts for specific workspaces (9 = last workspace)
-        // Always consume the event when the digit matches to prevent Ghostty's
-        // goto_tab fallback from creating a new window when the index is out of bounds.
         if shortcutWhenClauseAllows(action: .selectWorkspaceByNumber, event: event),
            let digit = numberedConfiguredShortcutDigit(event: event, action: .selectWorkspaceByNumber) {
+            if digit == 9 {
+                tabManager?.selectLastLayoutTab()
+            } else {
+                tabManager?.selectLayoutTab(at: digit - 1)
+            }
+            return true
+        }
+
+        if shortcutWhenClauseAllows(action: .selectSurfaceByNumber, event: event),
+           let digit = numberedConfiguredShortcutDigit(event: event, action: .selectSurfaceByNumber) {
             if let manager = tabManager,
                let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forDigit: digit, workspaceCount: manager.tabs.count) {
 #if DEBUG
@@ -13481,17 +13488,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 )
 #endif
                 manager.selectTab(at: targetIndex)
-            }
-            return true
-        }
-
-        // Numeric shortcuts for surfaces within the focused pane (9 = last)
-        if shortcutWhenClauseAllows(action: .selectSurfaceByNumber, event: event),
-           let digit = numberedConfiguredShortcutDigit(event: event, action: .selectSurfaceByNumber) {
-            if digit == 9 {
-                tabManager?.selectLastSurface()
-            } else {
-                tabManager?.selectSurface(at: digit - 1)
             }
             return true
         }

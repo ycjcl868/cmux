@@ -931,15 +931,20 @@ struct LayoutTabBonsplitView: View {
 /// Horizontal tab strip showing layout tabs within a workspace.
 struct LayoutTabStripView: View {
     @ObservedObject var workspace: Workspace
+    @State private var isCommandHeld = false
+    @State private var commandHoldMonitor: Any?
+    @State private var commandHoldWorkItem: DispatchWorkItem?
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(Array(workspace.layoutTabs.enumerated()), id: \.element.id) { index, layoutTab in
                 let isSelected = layoutTab.id == workspace.selectedLayoutTabId
+                let shortcutDigit: Int? = index < 8 ? index + 1 : (index == workspace.layoutTabs.count - 1 ? 9 : nil)
                 LayoutTabItemView(
                     layoutTab: layoutTab,
                     index: index + 1,
                     isSelected: isSelected,
+                    shortcutHint: isCommandHeld ? shortcutDigit.map { "⌘\($0)" } : nil,
                     onSelect: { workspace.selectLayoutTab(id: layoutTab.id) },
                     onClose: workspace.layoutTabs.count > 1 ? { workspace.closeLayoutTab(id: layoutTab.id) } : nil
                 )
@@ -967,6 +972,40 @@ struct LayoutTabStripView: View {
                 .fill(Color.white.opacity(0.08))
                 .frame(height: 1)
         }
+        .onAppear { startCommandHoldMonitor() }
+        .onDisappear { stopCommandHoldMonitor() }
+    }
+
+    private func startCommandHoldMonitor() {
+        guard commandHoldMonitor == nil else { return }
+        commandHoldMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            let normalized = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if normalized == [.command] {
+                guard !isCommandHeld, commandHoldWorkItem == nil else { return event }
+                let workItem = DispatchWorkItem { [self] in
+                    self.isCommandHeld = true
+                }
+                commandHoldWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+            } else {
+                cancelCommandHold()
+            }
+            return event
+        }
+    }
+
+    private func cancelCommandHold() {
+        commandHoldWorkItem?.cancel()
+        commandHoldWorkItem = nil
+        isCommandHeld = false
+    }
+
+    private func stopCommandHoldMonitor() {
+        if let monitor = commandHoldMonitor {
+            NSEvent.removeMonitor(monitor)
+            commandHoldMonitor = nil
+        }
+        cancelCommandHold()
     }
 }
 
@@ -975,10 +1014,18 @@ private struct LayoutTabItemView: View {
     @ObservedObject var layoutTab: LayoutTab
     let index: Int
     let isSelected: Bool
+    let shortcutHint: String?
     let onSelect: () -> Void
     let onClose: (() -> Void)?
 
     @State private var isHovering = false
+    @State private var isEditing = false
+    @State private var editingTitle = ""
+
+    private func beginEditing() {
+        editingTitle = layoutTab.title
+        isEditing = true
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -986,18 +1033,40 @@ private struct LayoutTabItemView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(isSelected ? .white.opacity(0.9) : .white.opacity(0.4))
 
-            Text(layoutTab.title)
-                .font(.system(size: 12, weight: isSelected ? .medium : .regular))
-                .lineLimit(1)
-                .foregroundStyle(isSelected ? .white.opacity(0.9) : .white.opacity(0.5))
+            if isEditing {
+                TextField("", text: $editingTitle, onCommit: {
+                    let trimmed = editingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        layoutTab.title = trimmed
+                    }
+                    isEditing = false
+                })
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(minWidth: 60, maxWidth: 120)
+            } else {
+                Text(layoutTab.title)
+                    .font(.system(size: 12, weight: isSelected ? .medium : .regular))
+                    .lineLimit(1)
+                    .foregroundStyle(isSelected ? .white.opacity(0.9) : .white.opacity(0.5))
+            }
 
-            if let onClose, isHovering || isSelected {
+            if let shortcutHint {
+                Text(shortcutHint)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.white.opacity(0.15), in: Capsule())
+            } else if let onClose {
                 Button {
                     onClose()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(.white.opacity(isHovering || isSelected ? 0.4 : 0.15))
                         .frame(width: 16, height: 16)
                         .contentShape(Rectangle())
                 }
@@ -1010,7 +1079,21 @@ private struct LayoutTabItemView: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.white.opacity(0.12) : (isHovering ? Color.white.opacity(0.06) : Color.clear))
         )
+        .onTapGesture(count: 2) {
+            beginEditing()
+        }
         .onTapGesture { onSelect() }
+        .contextMenu {
+            Button(String(localized: "layoutTab.rename", defaultValue: "Rename Tab")) {
+                beginEditing()
+            }
+            if let onClose {
+                Divider()
+                Button(String(localized: "layoutTab.close", defaultValue: "Close Tab")) {
+                    onClose()
+                }
+            }
+        }
         .onHover { isHovering = $0 }
     }
 }

@@ -10619,6 +10619,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     @Published private(set) var layoutTabs: [LayoutTab] = []
     @Published var selectedLayoutTabId: UUID?
+    private var layoutTabCounter: Int = 0
 
     var selectedLayoutTab: LayoutTab? {
         guard let id = selectedLayoutTabId else { return layoutTabs.first }
@@ -11314,13 +11315,15 @@ final class Workspace: Identifiable, ObservableObject {
             autoCloseEmptyPanes: true,
             contentViewLifecycle: .keepAllAlive,
             newTabPosition: .current,
+            hidesTabBarForSingleTab: true,
             appearance: appearance
         )
         let controller = BonsplitController(configuration: config)
         controller.contextMenuShortcuts = Self.buildContextMenuShortcuts()
-        let initialLayoutTab = LayoutTab(title: title, bonsplitController: controller)
+        let initialLayoutTab = LayoutTab(title: "Tab 1", bonsplitController: controller)
         self.layoutTabs = [initialLayoutTab]
         self.selectedLayoutTabId = initialLayoutTab.id
+        self.layoutTabCounter = 1
 
         // Remove the default "Welcome" tab that bonsplit creates
         let welcomeTabIds = bonsplitController.allTabIds
@@ -11607,12 +11610,14 @@ final class Workspace: Identifiable, ObservableObject {
             autoCloseEmptyPanes: true,
             contentViewLifecycle: .keepAllAlive,
             newTabPosition: .current,
+            hidesTabBarForSingleTab: true,
             appearance: appearance
         )
         let controller = BonsplitController(configuration: config)
         controller.contextMenuShortcuts = Self.buildContextMenuShortcuts()
 
-        let layoutTab = LayoutTab(title: title, bonsplitController: controller)
+        layoutTabCounter += 1
+        let layoutTab = LayoutTab(title: "Tab \(layoutTabCounter)", bonsplitController: controller)
 
         let welcomeTabIds = controller.allTabIds
 
@@ -11673,6 +11678,16 @@ final class Workspace: Identifiable, ObservableObject {
         selectedLayoutTabId = id
     }
 
+    func selectLayoutTab(at index: Int) {
+        guard index >= 0 && index < layoutTabs.count else { return }
+        selectedLayoutTabId = layoutTabs[index].id
+    }
+
+    func selectLastLayoutTab() {
+        guard let last = layoutTabs.last else { return }
+        selectedLayoutTabId = last.id
+    }
+
     func selectNextLayoutTab() {
         guard layoutTabs.count > 1,
               let currentIndex = layoutTabs.firstIndex(where: { $0.id == selectedLayoutTabId }) else { return }
@@ -11694,7 +11709,6 @@ final class Workspace: Identifiable, ObservableObject {
         let closingTab = layoutTabs[index]
         let controller = closingTab.bonsplitController
 
-        // Collect all panel IDs belonging to this layout tab
         var panelIdsToRemove: Set<UUID> = []
         for paneId in controller.allPaneIds {
             for tab in controller.tabs(inPane: paneId) {
@@ -11704,7 +11718,6 @@ final class Workspace: Identifiable, ObservableObject {
             }
         }
 
-        // Close and remove panels belonging to this layout tab
         for panelId in panelIdsToRemove {
             if let surfaceId = surfaceIdFromPanelId(panelId) {
                 surfaceIdToPanelId.removeValue(forKey: surfaceId)
@@ -11728,7 +11741,6 @@ final class Workspace: Identifiable, ObservableObject {
 
         layoutTabs.remove(at: index)
 
-        // Select adjacent tab if we closed the selected one
         if selectedLayoutTabId == id {
             let newIndex = min(index, layoutTabs.count - 1)
             selectedLayoutTabId = layoutTabs[newIndex].id
@@ -19426,6 +19438,24 @@ extension Workspace: BonsplitDelegate {
         clearRemoteConfigurationIfWorkspaceBecameLocal()
         if !isDetaching, let cleanupConfiguration = closedRemoteCleanupConfiguration {
             Self.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
+        }
+
+        // If the layout tab that owned this controller is now empty and there are
+        // other layout tabs, close the empty layout tab instead of creating a replacement.
+        let controllerIsEmpty = controller.allTabIds.isEmpty
+        if controllerIsEmpty, layoutTabs.count > 1,
+           let emptyLayoutTab = layoutTabs.first(where: { $0.bonsplitController === controller }) {
+#if DEBUG
+            dlog(
+                "surface.didCloseTab.end tab=\(String(describing: tabId).prefix(5)) " +
+                "panel=\(panelId.uuidString.prefix(5)) mode=closeEmptyLayoutTab " +
+                "layoutTab=\(emptyLayoutTab.id.uuidString.prefix(5))"
+            )
+#endif
+            closeLayoutTab(id: emptyLayoutTab.id)
+            scheduleTerminalGeometryReconcile()
+            scheduleFocusReconcile()
+            return
         }
 
         // Keep the workspace invariant for normal close paths.

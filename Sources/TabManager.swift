@@ -7085,12 +7085,18 @@ class TabManager: ObservableObject {
         selectedWorkspace?.selectPreviousSurface()
     }
 
-    /// Select the next layout tab in the selected workspace
+    func selectLayoutTab(at index: Int) {
+        selectedWorkspace?.selectLayoutTab(at: index)
+    }
+
+    func selectLastLayoutTab() {
+        selectedWorkspace?.selectLastLayoutTab()
+    }
+
     func selectNextLayoutTab() {
         selectedWorkspace?.selectNextLayoutTab()
     }
 
-    /// Select the previous layout tab in the selected workspace
     func selectPreviousLayoutTab() {
         selectedWorkspace?.selectPreviousLayoutTab()
     }
@@ -7105,7 +7111,6 @@ class TabManager: ObservableObject {
         selectedWorkspace?.selectLastSurface()
     }
 
-    /// Create a new layout tab in the selected workspace (Cmd+T).
     func newSurface() {
         selectedWorkspace?.createLayoutTab()
     }
