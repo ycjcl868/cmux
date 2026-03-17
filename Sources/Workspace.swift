@@ -11676,16 +11676,19 @@ final class Workspace: Identifiable, ObservableObject {
     func selectLayoutTab(id: UUID) {
         guard layoutTabs.contains(where: { $0.id == id }) else { return }
         selectedLayoutTabId = id
+        scheduleFocusReconcile()
     }
 
     func selectLayoutTab(at index: Int) {
         guard index >= 0 && index < layoutTabs.count else { return }
         selectedLayoutTabId = layoutTabs[index].id
+        scheduleFocusReconcile()
     }
 
     func selectLastLayoutTab() {
         guard let last = layoutTabs.last else { return }
         selectedLayoutTabId = last.id
+        scheduleFocusReconcile()
     }
 
     func selectNextLayoutTab() {
@@ -11693,6 +11696,7 @@ final class Workspace: Identifiable, ObservableObject {
               let currentIndex = layoutTabs.firstIndex(where: { $0.id == selectedLayoutTabId }) else { return }
         let nextIndex = (currentIndex + 1) % layoutTabs.count
         selectedLayoutTabId = layoutTabs[nextIndex].id
+        scheduleFocusReconcile()
     }
 
     func selectPreviousLayoutTab() {
@@ -11700,6 +11704,15 @@ final class Workspace: Identifiable, ObservableObject {
               let currentIndex = layoutTabs.firstIndex(where: { $0.id == selectedLayoutTabId }) else { return }
         let prevIndex = (currentIndex - 1 + layoutTabs.count) % layoutTabs.count
         selectedLayoutTabId = layoutTabs[prevIndex].id
+        scheduleFocusReconcile()
+    }
+
+    /// Move a layout tab to the position of another layout tab (for drag reordering).
+    func moveLayoutTab(id: UUID, toId: UUID) {
+        guard id != toId,
+              let fromIndex = layoutTabs.firstIndex(where: { $0.id == id }),
+              let toIndex = layoutTabs.firstIndex(where: { $0.id == toId }) else { return }
+        layoutTabs.move(fromOffsets: IndexSet(integer: fromIndex), toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex)
     }
 
     func closeLayoutTab(id: UUID) {

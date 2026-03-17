@@ -934,12 +934,14 @@ struct LayoutTabStripView: View {
     @State private var isCommandHeld = false
     @State private var commandHoldMonitor: Any?
     @State private var commandHoldWorkItem: DispatchWorkItem?
+    @State private var draggingTabId: UUID?
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(Array(workspace.layoutTabs.enumerated()), id: \.element.id) { index, layoutTab in
                 let isSelected = layoutTab.id == workspace.selectedLayoutTabId
                 let shortcutDigit: Int? = index < 8 ? index + 1 : (index == workspace.layoutTabs.count - 1 ? 9 : nil)
+                let isDragging = draggingTabId == layoutTab.id
                 LayoutTabItemView(
                     layoutTab: layoutTab,
                     index: index + 1,
@@ -948,6 +950,16 @@ struct LayoutTabStripView: View {
                     onSelect: { workspace.selectLayoutTab(id: layoutTab.id) },
                     onClose: workspace.layoutTabs.count > 1 ? { workspace.closeLayoutTab(id: layoutTab.id) } : nil
                 )
+                .opacity(isDragging ? 0.4 : 1.0)
+                .onDrag {
+                    draggingTabId = layoutTab.id
+                    return NSItemProvider(object: layoutTab.id.uuidString as NSString)
+                }
+                .onDrop(of: [.text], delegate: LayoutTabDropDelegate(
+                    targetId: layoutTab.id,
+                    workspace: workspace,
+                    draggingTabId: $draggingTabId
+                ))
             }
 
             Button {
@@ -1095,6 +1107,37 @@ private struct LayoutTabItemView: View {
             }
         }
         .onHover { isHovering = $0 }
+    }
+}
+
+// MARK: - Layout Tab Drop Delegate
+
+private struct LayoutTabDropDelegate: DropDelegate {
+    let targetId: UUID
+    let workspace: Workspace
+    @Binding var draggingTabId: UUID?
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let draggedId = draggingTabId, draggedId != targetId else {
+            draggingTabId = nil
+            return false
+        }
+        workspace.moveLayoutTab(id: draggedId, toId: targetId)
+        draggingTabId = nil
+        return true
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedId = draggingTabId, draggedId != targetId else { return }
+        workspace.moveLayoutTab(id: draggedId, toId: targetId)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        draggingTabId != nil && draggingTabId != targetId
     }
 }
 
