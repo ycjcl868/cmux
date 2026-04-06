@@ -1789,6 +1789,14 @@ indirect enum SessionWorkspaceLayoutSnapshot: Codable, Sendable {
     }
 }
 
+struct SessionLayoutTabSnapshot: Codable, Sendable {
+    var id: UUID
+    var title: String
+    var isUserRenamed: Bool?
+    var layout: SessionWorkspaceLayoutSnapshot
+    var focusedPanelId: UUID?
+}
+
 struct SessionWorkspaceSnapshot: Codable, Sendable {
     /// Original workspace ID captured when the snapshot comes from a live workspace.
     /// Restore uses this to remap closed-panel history onto the new workspace IDs;
@@ -1813,6 +1821,8 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var progress: SessionProgressSnapshot?
     var gitBranch: SessionGitBranchSnapshot?
     var remote: SessionRemoteWorkspaceSnapshot?
+    var layoutTabs: [SessionLayoutTabSnapshot]?
+    var selectedLayoutTabIndex: Int?
 }
 
 struct SessionWorkspaceGroupSnapshot: Codable, Sendable, Equatable {

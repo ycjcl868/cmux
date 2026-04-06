@@ -167,17 +167,24 @@ extension Workspace {
         restorableAgentIndex: RestorableAgentSessionIndex? = nil,
         surfaceResumeBindingIndex: SurfaceResumeBindingIndex? = nil
     ) -> SessionWorkspaceSnapshot {
-        let tree = bonsplitController.treeSnapshot()
-        let rawLayout = sessionLayoutSnapshot(from: tree)
         if let surfaceResumeBindingIndex {
             reconcileSurfaceResumeBindings(using: surfaceResumeBindingIndex)
         }
 
-        let orderedPanelIds = sidebarOrderedPanelIds()
         var seen: Set<UUID> = []
         var allPanelIds: [UUID] = []
-        for panelId in orderedPanelIds where seen.insert(panelId).inserted {
+        for panelId in sidebarOrderedPanelIds() where seen.insert(panelId).inserted {
             allPanelIds.append(panelId)
+        }
+        for layoutTab in layoutTabs {
+            let controller = layoutTab.bonsplitController
+            for paneId in controller.allPaneIds {
+                for tab in controller.tabs(inPane: paneId) {
+                    if let panelId = panelIdFromSurfaceId(tab.id), seen.insert(panelId).inserted {
+                        allPanelIds.append(panelId)
+                    }
+                }
+            }
         }
         for panelId in panels.keys.sorted(by: { $0.uuidString < $1.uuidString }) where seen.insert(panelId).inserted {
             allPanelIds.append(panelId)
@@ -197,9 +204,34 @@ extension Workspace {
                 )
             }
         let persistedPanelIds = Set(panelSnapshots.map(\.id))
-        let layout = prunedSessionLayoutSnapshot(rawLayout, keeping: persistedPanelIds) ?? .pane(
-            SessionPaneLayoutSnapshot(panelIds: [], selectedPanelId: nil)
-        )
+
+        func snapshotLayout(for controller: BonsplitController) -> SessionWorkspaceLayoutSnapshot {
+            let rawLayout = sessionLayoutSnapshot(from: controller.treeSnapshot())
+            return prunedSessionLayoutSnapshot(rawLayout, keeping: persistedPanelIds) ?? .pane(
+                SessionPaneLayoutSnapshot(panelIds: [], selectedPanelId: nil)
+            )
+        }
+
+        let layout = snapshotLayout(for: bonsplitController)
+        let layoutTabSnapshots: [SessionLayoutTabSnapshot] = layoutTabs.map { layoutTab in
+            let controller = layoutTab.bonsplitController
+            let rawFocusedPanelId: UUID? = {
+                guard let paneId = controller.focusedPaneId,
+                      let tab = controller.selectedTab(inPane: paneId) else { return nil }
+                return panelIdFromSurfaceId(tab.id)
+            }()
+            let focusedPanelId = rawFocusedPanelId.flatMap {
+                persistedPanelIds.contains($0) ? $0 : nil
+            }
+            return SessionLayoutTabSnapshot(
+                id: layoutTab.id,
+                title: layoutTab.title,
+                isUserRenamed: layoutTab.isUserRenamed ? true : nil,
+                layout: snapshotLayout(for: controller),
+                focusedPanelId: focusedPanelId
+            )
+        }
+        let selectedLayoutTabIndex = layoutTabs.firstIndex(where: { $0.id == selectedLayoutTabId })
 
         let statusSnapshots = statusEntries.values
             .sorted { lhs, rhs in lhs.key < rhs.key }
@@ -253,7 +285,9 @@ extension Workspace {
             logEntries: logSnapshots,
             progress: progressSnapshot,
             gitBranch: gitBranchSnapshot,
-            remote: remoteConfiguration?.sessionSnapshot()
+            remote: remoteConfiguration?.sessionSnapshot(),
+            layoutTabs: layoutTabSnapshots,
+            selectedLayoutTabIndex: selectedLayoutTabIndex
         )
     }
 
@@ -296,26 +330,81 @@ extension Workspace {
         }
 
         let panelSnapshotsById = Dictionary(uniqueKeysWithValues: snapshot.panels.map { ($0.id, $0) })
-        let leafEntries: [SessionPaneRestoreEntry] = {
+        func restoreLayoutEntries(_ layout: SessionWorkspaceLayoutSnapshot) -> [SessionPaneRestoreEntry] {
             let previousValue = suppressRemoteTerminalStartupForSessionRestoreScaffold
             suppressRemoteTerminalStartupForSessionRestoreScaffold = true
             defer { suppressRemoteTerminalStartupForSessionRestoreScaffold = previousValue }
-            return restoreSessionLayout(snapshot.layout)
-        }()
-        var oldToNewPanelIds: [UUID: UUID] = [:]
+            return restoreSessionLayout(layout)
+        }
 
-        for entry in leafEntries {
-            restorePane(
-                entry.paneId,
-                snapshot: entry.snapshot,
-                panelSnapshotsById: panelSnapshotsById,
-                snapshotWorkspaceId: snapshot.workspaceId,
-                oldToNewPanelIds: &oldToNewPanelIds
-            )
+        var oldToNewPanelIds: [UUID: UUID] = [:]
+        let layoutTabSnapshots = snapshot.layoutTabs ?? []
+        let hasMultipleLayoutTabs = layoutTabSnapshots.count > 1
+
+        if hasMultipleLayoutTabs {
+            for layoutTab in layoutTabs {
+                let controller = layoutTab.bonsplitController
+                for paneId in controller.allPaneIds {
+                    for tab in controller.tabs(inPane: paneId) {
+                        if let panelId = panelIdFromSurfaceId(tab.id) {
+                            panels[panelId]?.close()
+                            panels.removeValue(forKey: panelId)
+                        }
+                        surfaceIdToPanelId.removeValue(forKey: tab.id)
+                    }
+                }
+            }
+            layoutTabs.removeAll()
+
+            for layoutTabSnapshot in layoutTabSnapshots {
+                let newLayoutTab = makeEmptyLayoutTab(id: layoutTabSnapshot.id, title: layoutTabSnapshot.title)
+                newLayoutTab.isUserRenamed = layoutTabSnapshot.isUserRenamed ?? false
+                layoutTabs.append(newLayoutTab)
+                selectedLayoutTabId = newLayoutTab.id
+
+                for entry in restoreLayoutEntries(layoutTabSnapshot.layout) {
+                    restorePane(
+                        entry.paneId,
+                        snapshot: entry.snapshot,
+                        panelSnapshotsById: panelSnapshotsById,
+                        snapshotWorkspaceId: snapshot.workspaceId,
+                        oldToNewPanelIds: &oldToNewPanelIds
+                    )
+                }
+                applySessionDividerPositions(
+                    snapshotNode: layoutTabSnapshot.layout,
+                    liveNode: newLayoutTab.bonsplitController.treeSnapshot()
+                )
+            }
+
+            layoutTabCounter = layoutTabs.count
+
+            let selectedIndex = snapshot.selectedLayoutTabIndex ?? 0
+            if layoutTabs.indices.contains(selectedIndex) {
+                selectedLayoutTabId = layoutTabs[selectedIndex].id
+            } else {
+                selectedLayoutTabId = layoutTabs.first?.id
+            }
+        } else {
+            let restoredLayout = layoutTabSnapshots.first?.layout ?? snapshot.layout
+            if let layoutTabSnapshot = layoutTabSnapshots.first,
+               let firstLayoutTab = layoutTabs.first {
+                firstLayoutTab.title = layoutTabSnapshot.title
+                firstLayoutTab.isUserRenamed = layoutTabSnapshot.isUserRenamed ?? false
+            }
+            for entry in restoreLayoutEntries(restoredLayout) {
+                restorePane(
+                    entry.paneId,
+                    snapshot: entry.snapshot,
+                    panelSnapshotsById: panelSnapshotsById,
+                    snapshotWorkspaceId: snapshot.workspaceId,
+                    oldToNewPanelIds: &oldToNewPanelIds
+                )
+            }
+            applySessionDividerPositions(snapshotNode: restoredLayout, liveNode: bonsplitController.treeSnapshot())
         }
 
         pruneSurfaceMetadata(validSurfaceIds: Set(panels.keys))
-        applySessionDividerPositions(snapshotNode: snapshot.layout, liveNode: bonsplitController.treeSnapshot())
 
         applyProcessTitle(snapshot.processTitle)
         setCustomTitle(snapshot.customTitle)
@@ -346,14 +435,33 @@ extension Workspace {
 
         recomputeListeningPorts()
 
-        if let focusedOldPanelId = snapshot.focusedPanelId,
-           let focusedNewPanelId = oldToNewPanelIds[focusedOldPanelId],
-           panels[focusedNewPanelId] != nil {
-            focusPanel(focusedNewPanelId)
-        } else if let fallbackFocusedPanelId = focusedPanelId, panels[fallbackFocusedPanelId] != nil {
-            focusPanel(fallbackFocusedPanelId)
+        if hasMultipleLayoutTabs {
+            let selectedIndex = snapshot.selectedLayoutTabIndex ?? 0
+            let selectedLayoutTabSnapshot: SessionLayoutTabSnapshot?
+            if layoutTabSnapshots.indices.contains(selectedIndex) {
+                selectedLayoutTabSnapshot = layoutTabSnapshots[selectedIndex]
+            } else {
+                selectedLayoutTabSnapshot = layoutTabSnapshots.first
+            }
+            if let focusedOldPanelId = selectedLayoutTabSnapshot?.focusedPanelId,
+               let focusedNewPanelId = oldToNewPanelIds[focusedOldPanelId],
+               panels[focusedNewPanelId] != nil {
+                focusPanel(focusedNewPanelId)
+            } else if let fallbackFocusedPanelId = focusedPanelId, panels[fallbackFocusedPanelId] != nil {
+                focusPanel(fallbackFocusedPanelId)
+            } else {
+                scheduleFocusReconcile()
+            }
         } else {
-            scheduleFocusReconcile()
+            if let focusedOldPanelId = snapshot.focusedPanelId,
+               let focusedNewPanelId = oldToNewPanelIds[focusedOldPanelId],
+               panels[focusedNewPanelId] != nil {
+                focusPanel(focusedNewPanelId)
+            } else if let fallbackFocusedPanelId = focusedPanelId, panels[fallbackFocusedPanelId] != nil {
+                focusPanel(fallbackFocusedPanelId)
+            } else {
+                scheduleFocusReconcile()
+            }
         }
         let isWorkspaceManuallyUnread = snapshot.isManuallyUnread == true
         restoreWorkspaceManualUnread(isWorkspaceManuallyUnread)
@@ -11707,12 +11815,91 @@ final class Workspace: Identifiable, ObservableObject {
         scheduleFocusReconcile()
     }
 
-    /// Move a layout tab to the position of another layout tab (for drag reordering).
     func moveLayoutTab(id: UUID, toId: UUID) {
         guard id != toId,
               let fromIndex = layoutTabs.firstIndex(where: { $0.id == id }),
               let toIndex = layoutTabs.firstIndex(where: { $0.id == toId }) else { return }
         layoutTabs.move(fromOffsets: IndexSet(integer: fromIndex), toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex)
+    }
+
+    private func makeEmptyLayoutTab(id: UUID, title: String) -> LayoutTab {
+        let initialSurfaceTabBarFontSize = GhosttyConfig.load().surfaceTabBarFontSize
+        let appearance = Self.bonsplitAppearance(
+            from: GhosttyApp.shared.defaultBackgroundColor,
+            backgroundOpacity: GhosttyApp.shared.defaultBackgroundOpacity,
+            tabTitleFontSize: initialSurfaceTabBarFontSize
+        )
+        let config = BonsplitConfiguration(
+            allowSplits: true,
+            allowCloseTabs: !CloseTabWarningSettings.hidesTabCloseButton(),
+            allowCloseLastPane: false,
+            allowTabReordering: true,
+            allowCrossPaneTabMove: true,
+            autoCloseEmptyPanes: true,
+            contentViewLifecycle: .keepAllAlive,
+            newTabPosition: .current,
+            hidesTabBarForSingleTab: true,
+            appearance: appearance
+        )
+        let controller = BonsplitController(configuration: config)
+        controller.contextMenuShortcuts = Self.buildContextMenuShortcuts()
+
+        let welcomeTabIds = controller.allTabIds
+        for welcomeTabId in welcomeTabIds {
+            controller.closeTab(welcomeTabId)
+        }
+
+        configureBonsplitController(controller)
+        return LayoutTab(id: id, title: title, bonsplitController: controller)
+    }
+
+    func autoNameLayoutTab(_ layoutTab: LayoutTab) {
+        guard !layoutTab.isUserRenamed else { return }
+
+        let surfaceIds = layoutTab.bonsplitController.allTabIds
+        let panelIds = surfaceIds.compactMap { surfaceIdToPanelId[$0] }
+
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
+        let dirs: [String] = panelIds.compactMap { panelDirectories[$0] }
+            .map { dir in
+                let last = (dir as NSString).lastPathComponent
+                if dir == homeDir || last == NSUserName() {
+                    return "~"
+                }
+                return last
+            }
+
+        let uniqueDirs = dirs.reduce(into: [String]()) { result, dir in
+            if !result.contains(dir) { result.append(dir) }
+        }
+
+        guard !uniqueDirs.isEmpty else { return }
+
+        let title: String
+        switch uniqueDirs.count {
+        case 1:
+            title = uniqueDirs[0]
+        case 2, 3:
+            title = uniqueDirs.joined(separator: " + ")
+        default:
+            title = uniqueDirs.prefix(2).joined(separator: " + ") + " ..."
+        }
+
+        if layoutTab.title != title {
+            layoutTab.title = title
+        }
+    }
+
+    private func layoutTab(forPanelId panelId: UUID) -> LayoutTab? {
+        for layoutTab in layoutTabs {
+            let surfaceIds = layoutTab.bonsplitController.allTabIds
+            for surfaceId in surfaceIds {
+                if surfaceIdToPanelId[surfaceId] == panelId {
+                    return layoutTab
+                }
+            }
+        }
+        return nil
     }
 
     func closeLayoutTab(id: UUID) {
@@ -12721,10 +12908,10 @@ final class Workspace: Identifiable, ObservableObject {
            shouldIgnoreRestoredGuardedDirectoryReport(panelId: panelId, reportedDirectory: trimmed) {
             return false
         }
-        if panelDirectories[panelId] != trimmed {
+        let changed = panelDirectories[panelId] != trimmed
+        if changed {
             panelDirectories[panelId] = trimmed
         }
-        // Update current directory if this is the focused panel
         if panelId == focusedPanelId {
             if surfaceTabBarDirectory != trimmed {
                 surfaceTabBarDirectory = trimmed
@@ -12732,6 +12919,9 @@ final class Workspace: Identifiable, ObservableObject {
             if currentDirectory != trimmed {
                 currentDirectory = trimmed
             }
+        }
+        if changed, let layoutTab = layoutTab(forPanelId: panelId) {
+            autoNameLayoutTab(layoutTab)
         }
         return true
     }

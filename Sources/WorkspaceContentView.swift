@@ -941,16 +941,18 @@ struct LayoutTabStripView: View {
             ForEach(Array(workspace.layoutTabs.enumerated()), id: \.element.id) { index, layoutTab in
                 let isSelected = layoutTab.id == workspace.selectedLayoutTabId
                 let shortcutDigit: Int? = index < 8 ? index + 1 : (index == workspace.layoutTabs.count - 1 ? 9 : nil)
-                let isDragging = draggingTabId == layoutTab.id
                 LayoutTabItemView(
                     layoutTab: layoutTab,
                     index: index + 1,
                     isSelected: isSelected,
                     shortcutHint: isCommandHeld ? shortcutDigit.map { "⌘\($0)" } : nil,
                     onSelect: { workspace.selectLayoutTab(id: layoutTab.id) },
-                    onClose: workspace.layoutTabs.count > 1 ? { workspace.closeLayoutTab(id: layoutTab.id) } : nil
+                    onClose: workspace.layoutTabs.count > 1 ? { workspace.closeLayoutTab(id: layoutTab.id) } : nil,
+                    onResetAutoName: {
+                        layoutTab.isUserRenamed = false
+                        workspace.autoNameLayoutTab(layoutTab)
+                    }
                 )
-                .opacity(isDragging ? 0.4 : 1.0)
                 .onDrag {
                     draggingTabId = layoutTab.id
                     return NSItemProvider(object: layoutTab.id.uuidString as NSString)
@@ -976,6 +978,7 @@ struct LayoutTabStripView: View {
 
             Spacer()
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: workspace.layoutTabs.map(\.id))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(Color.white.opacity(0.06))
@@ -1029,6 +1032,7 @@ private struct LayoutTabItemView: View {
     let shortcutHint: String?
     let onSelect: () -> Void
     let onClose: (() -> Void)?
+    var onResetAutoName: (() -> Void)?
 
     @State private var isHovering = false
     @State private var isEditing = false
@@ -1050,6 +1054,7 @@ private struct LayoutTabItemView: View {
                     let trimmed = editingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty {
                         layoutTab.title = trimmed
+                        layoutTab.isUserRenamed = true
                     }
                     isEditing = false
                 })
@@ -1099,6 +1104,11 @@ private struct LayoutTabItemView: View {
             Button(String(localized: "layoutTab.rename", defaultValue: "Rename Tab")) {
                 beginEditing()
             }
+            if layoutTab.isUserRenamed, let onResetAutoName {
+                Button(String(localized: "layoutTab.resetAutoName", defaultValue: "Reset Auto Name")) {
+                    onResetAutoName()
+                }
+            }
             if let onClose {
                 Divider()
                 Button(String(localized: "layoutTab.close", defaultValue: "Close Tab")) {
@@ -1129,7 +1139,9 @@ private struct LayoutTabDropDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         guard let draggedId = draggingTabId, draggedId != targetId else { return }
-        workspace.moveLayoutTab(id: draggedId, toId: targetId)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            workspace.moveLayoutTab(id: draggedId, toId: targetId)
+        }
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
