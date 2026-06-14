@@ -1128,14 +1128,12 @@ final class WindowTerminalPortal: NSObject {
 #endif
     }
 
-    /// Update the visibleInUI flag on an existing entry without rebinding.
-    /// Used when a deferred bind is pending — this ensures synchronizeHostedView
-    /// won't hide a view that updateNSView has already marked as visible.
     func updateEntryVisibility(forHostedId hostedId: ObjectIdentifier, visibleInUI: Bool) {
         guard var entry = entriesByHostedId[hostedId] else { return }
         entry.visibleInUI = visibleInUI
         if !visibleInUI {
             entry.transientRecoveryRetriesRemaining = 0
+            entry.hostedView?.isHidden = true
         }
         entriesByHostedId[hostedId] = entry
     }
@@ -1799,7 +1797,8 @@ final class WindowTerminalPortal: NSObject {
 
         for subview in hostView.subviews.reversed() {
             guard let hostedView = subview as? GhosttySurfaceScrollView,
-                  entriesByHostedId[ObjectIdentifier(hostedView)] != nil,
+                  let entry = entriesByHostedId[ObjectIdentifier(hostedView)],
+                  entry.visibleInUI,
                   !hostedView.isHidden,
                   hostedView.frame.contains(point) else { continue }
             return (hostedView, hostedView.convert(point, from: hostView))
@@ -2148,9 +2147,6 @@ enum TerminalWindowPortalRegistry {
         portalsByWindowId[windowId]?.detachHostedView(withId: hostedId)
     }
 
-    /// Update the visibleInUI flag on an existing portal entry without rebinding.
-    /// Called when a bind is deferred (host not yet in window) to prevent stale
-    /// portal syncs from hiding a view that is about to become visible.
     static func updateEntryVisibility(for hostedView: GhosttySurfaceScrollView, visibleInUI: Bool) {
         let hostedId = ObjectIdentifier(hostedView)
         guard let windowId = hostedToWindowId[hostedId],

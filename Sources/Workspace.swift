@@ -11423,7 +11423,6 @@ final class Workspace: Identifiable, ObservableObject {
             autoCloseEmptyPanes: true,
             contentViewLifecycle: .keepAllAlive,
             newTabPosition: .current,
-            hidesTabBarForSingleTab: true,
             appearance: appearance
         )
         let controller = BonsplitController(configuration: config)
@@ -11718,7 +11717,6 @@ final class Workspace: Identifiable, ObservableObject {
             autoCloseEmptyPanes: true,
             contentViewLifecycle: .keepAllAlive,
             newTabPosition: .current,
-            hidesTabBarForSingleTab: true,
             appearance: appearance
         )
         let controller = BonsplitController(configuration: config)
@@ -11737,7 +11735,7 @@ final class Workspace: Identifiable, ObservableObject {
             }
             return currentDirectory
         }()
-        let inheritedConfig: ghostty_surface_config_s? = focusedTerminalPanel.flatMap { panel in
+        let inheritedConfig: CmuxSurfaceConfigTemplate? = focusedTerminalPanel.flatMap { panel in
             panel.surface.surface.map { surface in
                 cmuxInheritedSurfaceConfig(sourceSurface: surface, context: GHOSTTY_SURFACE_CONTEXT_TAB)
             }
@@ -11838,7 +11836,6 @@ final class Workspace: Identifiable, ObservableObject {
             autoCloseEmptyPanes: true,
             contentViewLifecycle: .keepAllAlive,
             newTabPosition: .current,
-            hidesTabBarForSingleTab: true,
             appearance: appearance
         )
         let controller = BonsplitController(configuration: config)

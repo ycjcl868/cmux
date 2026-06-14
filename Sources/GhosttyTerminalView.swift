@@ -16576,9 +16576,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
                     )
                 }
             } else if hostOwnsPortalNow, portalBindingStillLive() {
-                // Bind is deferred until host moves into a window. Update the
-                // existing portal entry's visibleInUI now so that any portal sync
-                // that runs before the deferred bind completes won't hide the view.
 #if DEBUG
                 if desiredStateChanged {
                     cmuxDebugLog(

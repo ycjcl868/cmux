@@ -5065,6 +5065,52 @@ final class TerminalWindowPortalLifecycleTests: XCTestCase {
         )
     }
 
+    func testInvisiblePortalEntryStopsParticipatingInHitTestingImmediately() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let portal = WindowTerminalPortal(window: window)
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        let anchor1 = NSView(frame: NSRect(x: 20, y: 20, width: 220, height: 180))
+        let anchor2 = NSView(frame: NSRect(x: 80, y: 60, width: 220, height: 180))
+        contentView.addSubview(anchor1)
+        contentView.addSubview(anchor2)
+
+        let terminal1 = GhosttyNSView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        let hosted1 = GhosttySurfaceScrollView(surfaceView: terminal1)
+        let terminal2 = GhosttyNSView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+        let hosted2 = GhosttySurfaceScrollView(surfaceView: terminal2)
+
+        portal.bind(hostedView: hosted2, to: anchor2, visibleInUI: true)
+        portal.bind(hostedView: hosted1, to: anchor1, visibleInUI: true)
+
+        let overlapInContent = NSPoint(x: 120, y: 100)
+        let overlapInWindow = contentView.convert(overlapInContent, to: nil)
+        XCTAssertTrue(
+            portal.terminalViewAtWindowPoint(overlapInWindow) === terminal1,
+            "Latest bind should be top-most before visibility update"
+        )
+
+        portal.updateEntryVisibility(forHostedId: ObjectIdentifier(hosted1), visibleInUI: false)
+
+        XCTAssertEqual(
+            hosted1.isHidden,
+            true,
+            "Invisible portal entries should be hidden before the next geometry sync"
+        )
+        XCTAssertTrue(
+            portal.terminalViewAtWindowPoint(overlapInWindow) === terminal2,
+            "Invisible portal entries should not receive pointer hit-testing before the next geometry sync"
+        )
+    }
+
     func testPriorityIncreaseBringsHostedViewToFrontWithoutVisibilityToggle() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
